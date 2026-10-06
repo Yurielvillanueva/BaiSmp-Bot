@@ -1,0 +1,8 @@
+name: MCBridge
+version: 1.0.0
+main: com.mcbridge.BridgePlugin
+api-version: "1.21"
+commands:
+  link:
+    description: Generate a Discord link code
+    usage: /link

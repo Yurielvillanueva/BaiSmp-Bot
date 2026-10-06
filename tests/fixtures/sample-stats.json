@@ -1,0 +1,14 @@
+{
+  "stats": {
+    "minecraft:custom": {
+      "minecraft:play_time": 72000,
+      "minecraft:deaths": 3,
+      "minecraft:mob_kills": 40,
+      "minecraft:walk_one_cm": 10000,
+      "minecraft:leave_game": 5
+    },
+    "minecraft:mined": {
+      "minecraft:stone": 120
+    }
+  }
+}

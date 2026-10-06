@@ -1,0 +1,42 @@
+{
+  "en": {
+    "status.online": "Online",
+    "status.offline": "Offline",
+    "status.maintenance": "Maintenance",
+    "link.need_code": "Provide the 6-character code from `/link` in-game.",
+    "link.invalid": "That code is invalid or expired.",
+    "link.success": "Linked `{username}` (`{uuid}`).",
+    "link.limit": "You already have the maximum number of linked accounts.",
+    "unlink.success": "Unlinked your Minecraft account.",
+    "generic.no_permission": "You do not have permission to use this command.",
+    "generic.rate_limited": "You are using commands too quickly.",
+    "generic.error": "Something went wrong. Staff have been notified.",
+    "rcon.disabled": "RCON features are disabled by the kill switch.",
+    "rcon.denied": "That command is not allowed for your staff tier.",
+    "rcon.blocked": "That command is blocked.",
+    "ticket.limit": "You already have the maximum number of open tickets.",
+    "whitelist.need_link": "Link an account first or provide a valid Java username.",
+    "daily.cooldown": "Daily reward is not ready yet. Try again in {wait}.",
+    "appeal.missing": "No active punishment found for that case ID."
+  },
+  "es": {
+    "status.online": "En línea",
+    "status.offline": "Fuera de línea",
+    "status.maintenance": "Mantenimiento",
+    "link.need_code": "Usa el código de 6 caracteres de `/link` en el juego.",
+    "link.invalid": "El código es inválido o expiró.",
+    "link.success": "Cuenta `{username}` (`{uuid}`) vinculada.",
+    "link.limit": "Ya tienes el máximo de cuentas vinculadas.",
+    "unlink.success": "Se desvinculó tu cuenta de Minecraft.",
+    "generic.no_permission": "No tienes permiso para usar este comando.",
+    "generic.rate_limited": "Estás usando comandos demasiado rápido.",
+    "generic.error": "Algo salió mal. El staff fue notificado.",
+    "rcon.disabled": "Las funciones RCON están desactivadas.",
+    "rcon.denied": "Ese comando no está permitido para tu rango.",
+    "rcon.blocked": "Ese comando está bloqueado.",
+    "ticket.limit": "Ya tienes el máximo de tickets abiertos.",
+    "whitelist.need_link": "Vincula una cuenta o indica un usuario de Java válido.",
+    "daily.cooldown": "La recompensa diaria aún no está lista. Espera {wait}.",
+    "appeal.missing": "No hay un castigo activo para ese ID de caso."
+  }
+}

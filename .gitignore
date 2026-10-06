@@ -1,0 +1,14 @@
+node_modules/
+.env
+data/
+backups/
+logs/
+coverage/
+*.log
+.DS_Store
+plugin/target/
+plugin/.idea/
+credentials/
+*.sqlite
+*.sqlite-journal
+dashboard-sessions/
