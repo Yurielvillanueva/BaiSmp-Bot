@@ -204,7 +204,7 @@ PERF_INTERVAL_MS=60000
 
 ## Render deployment (no website)
 
-Create a **Background Worker**, not a Web Service. The bot does not serve a public website; its local HTTP listeners are bound to loopback for health and plugin integration.
+Create a **Background Worker**, not a Web Service. The bot does not serve a public website; its local HTTP listeners are bound to loopback for health and plugin integration. Render Web Services must bind an HTTP server to a public port ([Render port-binding guide](https://render.com/docs/web-services#port-binding)); this bot is not configured to do that.
 
 Set the worker's build command to `npm install` and start command to `npm start`. Under **Environment**, add these required variables:
 
