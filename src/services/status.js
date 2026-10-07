@@ -4,15 +4,35 @@ const { cfg } = require('../config/store');
 const { embed } = require('../util/embeds');
 const { stripColorCodes } = require('../util/sanitize');
 const { pluginGet } = require('./pluginClient');
+const rcon = require('./rcon');
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function pingServer(server) {
+function parsePlayerCounts(response) {
+  const text = String(response || '');
+  const match = text.match(/\bThere are\s+(\d+)\s+(?:of\s+a\s+max(?:imum)?\s+of|out\s+of\s+(?:the\s+)?(?:maximum|max)(?:\s+of)?)\s+(\d+)\s+players?\s+online\b/i)
+    || text.match(/\b(\d+)\s*\/\s*(\d+)\s+players?\s+online\b/i);
+  if (!match) return null;
+
+  const players = Number(match[1]);
+  const max = Number(match[2]);
+  if (!Number.isSafeInteger(players) || !Number.isSafeInteger(max) || players > max) return null;
+
+  const listedPlayers = text.match(/players?\s+online:\s*(.+)$/i)?.[1];
+  return {
+    players,
+    max,
+    sample: listedPlayers ? listedPlayers.split(',').map((name) => name.trim()).filter(Boolean) : []
+  };
+}
+
+async function pingServer(server, ctx) {
+  let ping;
   try {
     const status = await util.status(server.host, server.query_port, { timeout: 4000 });
-    return {
+    ping = {
       online: true,
       players: status.players?.online ?? 0,
       max: status.players?.max ?? 0,
@@ -24,7 +44,7 @@ async function pingServer(server) {
   } catch {
     try {
       const q = await util.queryFull(server.host, server.query_port, { timeout: 4000 });
-      return {
+      ping = {
         online: true,
         players: q.players?.online ?? 0,
         max: q.players?.max ?? 0,
@@ -35,9 +55,37 @@ async function pingServer(server) {
       };
     } catch (err) {
       logger.debug({ err: err.message, server: server.name }, 'status ping failed');
-      return { online: false, players: 0, max: 0, sample: [], version: 'unknown', motd: '', ping: 0 };
+      ping = { online: false, players: 0, max: 0, sample: [], version: 'unknown', motd: '', ping: 0 };
     }
   }
+
+  if (ctx && (!ping.online || ping.max === 0)) {
+    try {
+      const { result } = await rcon.sendRcon(ctx.env, ctx.db, server, 'list');
+      const counts = parsePlayerCounts(result);
+      if (counts) {
+        return {
+          ...ping,
+          online: true,
+          ...counts,
+          version: ping.version === 'unknown' ? 'RCON' : ping.version
+        };
+      }
+      logger.warn({ server: server.name }, 'RCON list response did not include recognizable player counts');
+    } catch (err) {
+      logger.warn({ err, server: server.name }, 'RCON player count fallback failed');
+    }
+  }
+
+  return ping;
+}
+
+function syncMaintenance(db, server, ping) {
+  if (!ping.online) return;
+  const isMaintenance = /\bmaintenance\b/i.test(ping.motd || '') ? 1 : 0;
+  if (Number(server.maintenance || 0) === isMaintenance) return;
+  db.raw.prepare('UPDATE servers SET maintenance = ? WHERE id = ?').run(isMaintenance, server.id);
+  server.maintenance = isMaintenance;
 }
 
 function getFailState(db, serverId) {
@@ -58,37 +106,41 @@ function canRename(db, serverId, maxPerWindow) {
 async function updatePresence(client, totalOnline, totalMax) {
   await client.user.setPresence({
     activities: [{ name: `${totalOnline}/${totalMax} players`, type: 3 }],
-    status: totalOnline > 0 ? 'online' : 'idle'
+    status: totalOnline > 0 ? 'idle' : 'invisible'
   });
 }
 
 function statusEmbed(db, server, ping, extras) {
-  const maint = server.maintenance;
-  const title = maint ? 'Maintenance' : ping.online ? 'Online' : 'Offline';
+  const maint = Boolean(Number(server.maintenance || 0));
   const color = maint ? 0xf1c40f : ping.online ? 0x2ecc71 : 0xe74c3c;
-  const list = ping.sample.length ? ping.sample.slice(0, 25).join(', ') : '—';
-  return embed(db, {
-    title: `${server.name} — ${title}`,
-    color,
-    fields: [
-      { name: 'Players', value: `${ping.players}/${ping.max}`, inline: true },
-      { name: 'Version', value: String(ping.version).slice(0, 80), inline: true },
+  const list = ping.sample.length ? ping.sample.slice(0, 25).join(', ') : 'No players listed';
+  const fields = [
+    { name: 'Players', value: `${ping.players}/${ping.max}`, inline: true },
+    { name: 'Version', value: String(ping.version).slice(0, 80), inline: true },
+    { name: 'Supported versions', value: '1.21–1.21.11 (latest)', inline: true },
+    { name: 'Server address', value: `${server.host}:${server.query_port}`, inline: false },
+    { name: 'MOTD', value: ping.motd.slice(0, 1024) || '—', inline: false },
+    { name: 'Players online', value: list.slice(0, 1024), inline: false }
+  ];
+  if (extras) {
+    fields.splice(2, 0,
       { name: 'Ping', value: `${ping.ping}ms`, inline: true },
-      { name: 'TPS', value: extras.tps != null ? String(extras.tps) : 'n/a', inline: true },
-      { name: 'MOTD', value: ping.motd.slice(0, 200) || '—', inline: false },
-      { name: 'Players online', value: list.slice(0, 1000), inline: false }
-    ]
+      { name: 'TPS', value: extras.tps != null ? String(extras.tps) : 'n/a', inline: true }
+    );
+  }
+  return embed(db, {
+    title: `${server.name} — ${ping.online ? '🟢 ONLINE' : '🔴 OFFLINE'}${maint ? ' (Maintenance)' : ''}`,
+    color,
+    fields
   });
 }
 
 function createStatusService(ctx) {
   const { env, db, client } = ctx;
-  const backoff = new Map();
 
   async function tickOne(server) {
-    const wait = backoff.get(server.id) || 0;
-    if (wait > Date.now()) return;
-    const ping = await pingServer(server);
+    const ping = await pingServer(server, ctx);
+    syncMaintenance(db, server, ping);
     const extras = {};
     if (ping.online && server.plugin_api_url) {
       try {
@@ -102,8 +154,6 @@ function createStatusService(ctx) {
     if (!ping.online) {
       const streak = state.fail_streak + 1;
       db.raw.prepare('UPDATE status_state SET fail_streak = ? WHERE server_id = ?').run(streak, server.id);
-      const delay = Math.min(5 * 60 * 1000, 2000 * 2 ** Math.min(streak, 8));
-      backoff.set(server.id, Date.now() + delay);
       if (streak === cfg(db, 'crash_fail_threshold')) {
         const { dispatchAlert } = require('./alerts');
         await dispatchAlert(ctx, server, 'crash', { title: 'Possible crash', description: `${server.name} failed ${streak} consecutive status checks.` });
@@ -114,12 +164,11 @@ function createStatusService(ctx) {
         await dispatchAlert(ctx, server, 'server_start', { title: 'Server online', description: `${server.name} is responding again.` });
       }
       db.raw.prepare('UPDATE status_state SET fail_streak = 0, last_online = 1 WHERE server_id = ?').run(server.id);
-      backoff.delete(server.id);
     }
 
-    if (!server.status_channel_id) return;
+    if (!server.status_channel_id) return ping;
     const channel = await client.channels.fetch(server.status_channel_id).catch(() => null);
-    if (!channel?.isTextBased()) return;
+    if (!channel?.isTextBased()) return ping;
     const payload = { embeds: [statusEmbed(db, server, ping, extras)] };
     if (server.status_message_id) {
       const msg = await channel.messages.fetch(server.status_message_id).catch(() => null);
@@ -146,6 +195,29 @@ function createStatusService(ctx) {
     return ping;
   }
 
+  async function publish(server, ping, channel) {
+    if (!channel?.isTextBased() || typeof channel.send !== 'function') {
+      throw new Error('STATUS_CHANNEL_UNAVAILABLE');
+    }
+
+    syncMaintenance(db, server, ping);
+    const payload = { embeds: [statusEmbed(db, server, ping)] };
+    if (server.status_message_id && server.status_channel_id === channel.id) {
+      const existing = await channel.messages.fetch(server.status_message_id).catch(() => null);
+      if (existing) {
+        await existing.edit(payload);
+        return existing;
+      }
+    }
+
+    const message = await channel.send(payload);
+    db.servers.setStatusChannel(server.id, channel.id);
+    db.servers.setStatusMessage(server.id, message.id);
+    server.status_channel_id = channel.id;
+    server.status_message_id = message.id;
+    return message;
+  }
+
   async function tick() {
     const servers = db.servers.all();
     let online = 0;
@@ -164,7 +236,7 @@ function createStatusService(ctx) {
     await updatePresence(client, online, max).catch(() => {});
   }
 
-  return { tick, pingServer, sleep };
+  return { tick, pingServer, publish, sleep };
 }
 
-module.exports = { createStatusService, pingServer };
+module.exports = { createStatusService, pingServer, parsePlayerCounts, statusEmbed };

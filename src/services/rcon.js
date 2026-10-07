@@ -36,7 +36,7 @@ async function getClient(env, server) {
     ? decrypt(server.rcon_password_enc, env.CREDENTIALS_KEY)
     : env.MC_RCON_PASSWORD;
   const rcon = await Rcon.connect({
-    host: server.host,
+    host: server.rcon_host || server.host,
     port: server.rcon_port,
     password,
     timeout: env.RCON_TIMEOUT_MS

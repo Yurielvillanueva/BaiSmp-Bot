@@ -1,60 +1,7 @@
-const { SlashCommandBuilder, PermissionFlagsBits, ActionRowBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { SlashCommandBuilder, PermissionFlagsBits, ActionRowBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const { embed } = require('../util/embeds');
-const { formatDuration } = require('../util/sanitize');
-const { t } = require('../i18n');
 
 module.exports = [
-  {
-    data: new SlashCommandBuilder()
-      .setName('votes')
-      .setDescription('Vote stats')
-      .addStringOption((o) => o.setName('player').setDescription('Username')),
-    async execute(interaction, ctx) {
-      const name = interaction.options.getString('player') || ctx.links.getByDiscord(interaction.user.id)[0]?.username;
-      if (!name) {
-        await interaction.reply({ content: 'Provide a player name or link an account.', ephemeral: true });
-        return;
-      }
-      await interaction.reply({
-        embeds: [embed(ctx.db, {
-          title: `Votes ${name}`,
-          fields: [
-            { name: 'Total', value: String(ctx.rewards.count(name)), inline: true },
-            { name: 'Streak', value: String(ctx.rewards.streak(name)), inline: true }
-          ]
-        })]
-      });
-    }
-  },
-  {
-    data: new SlashCommandBuilder().setName('topvoters').setDescription('Top voters'),
-    async execute(interaction, ctx) {
-      const rows = ctx.rewards.top(10);
-      await interaction.reply({
-        embeds: [embed(ctx.db, { title: 'Top voters', description: rows.map((r, i) => `**${i + 1}.** ${r.username} — ${r.votes}`).join('\n') || 'None' })]
-      });
-    }
-  },
-  {
-    data: new SlashCommandBuilder().setName('daily').setDescription('Claim daily reward'),
-    async execute(interaction, ctx) {
-      const linked = ctx.links.getByDiscord(interaction.user.id)[0];
-      if (!linked) {
-        await interaction.reply({ content: 'Link an account first.', ephemeral: true });
-        return;
-      }
-      try {
-        const streak = await ctx.rewards.daily(interaction.user.id, linked.username);
-        await interaction.reply({ content: `Daily claimed. Streak: ${streak}`, ephemeral: true });
-      } catch (err) {
-        if (err.message === 'DAILY_COOLDOWN') {
-          await interaction.reply({ content: t(ctx.db, 'daily.cooldown', { wait: formatDuration(err.waitMs) }), ephemeral: true });
-          return;
-        }
-        throw err;
-      }
-    }
-  },
   {
     data: new SlashCommandBuilder()
       .setName('event')

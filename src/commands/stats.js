@@ -2,6 +2,12 @@ const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const { embed } = require('../util/embeds');
 const { AttachmentBuilder } = require('discord.js');
 
+function csvCell(value) {
+  const text = String(value ?? '');
+  const safeText = /^[\s]*[=+\-@]/.test(text) ? `'${text}` : text;
+  return `"${safeText.replace(/"/g, '""')}"`;
+}
+
 module.exports = [
   {
     data: new SlashCommandBuilder()
@@ -77,6 +83,8 @@ module.exports = [
       .addSubcommand((s) => s.setName('search').setDescription('Search logs')
         .addStringOption((o) => o.setName('query').setDescription('Query').setRequired(true))
         .addStringOption((o) => o.setName('action').setDescription('Action type')))
+      .addSubcommand((s) => s.setName('case').setDescription('View one case by its ID')
+        .addStringOption((o) => o.setName('case_id').setDescription('Case ID').setRequired(true).setMaxLength(64)))
       .addSubcommand((s) => s.setName('export').setDescription('Export CSV'))
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
     staff: 'mod',
@@ -111,8 +119,36 @@ module.exports = [
         });
         return;
       }
+      if (sub === 'case') {
+        const caseId = interaction.options.getString('case_id', true).trim();
+        const record = ctx.staffLog.getByCase(caseId);
+        if (!record) {
+          await interaction.reply({ content: `No staff case found with ID \`${caseId}\`.`, ephemeral: true });
+          return;
+        }
+        const fields = [
+          { name: 'Action', value: String(record.action || '—').slice(0, 1024), inline: true },
+          { name: 'Actor', value: record.actor_discord_id ? `<@${record.actor_discord_id}>` : 'System', inline: true },
+          { name: 'Target', value: record.target_name || (record.target_discord_id ? `<@${record.target_discord_id}>` : '—'), inline: true },
+          { name: 'Reason', value: String(record.reason || '—').slice(0, 1024), inline: false },
+          { name: 'Result', value: String(record.result || '—').slice(0, 1024), inline: false },
+          { name: 'Created', value: String(record.created_at || '—').slice(0, 128), inline: false }
+        ];
+        if (record.metadata) {
+          fields.push({ name: 'Metadata', value: `\`\`\`json\n${String(record.metadata).slice(0, 900)}\n\`\`\``, inline: false });
+        }
+        await interaction.reply({
+          ephemeral: true,
+          embeds: [embed(ctx.db, { title: `Staff case ${record.case_id}`, fields })]
+        });
+        return;
+      }
       const all = ctx.staffLog.allForExport();
-      const csv = ['case_id,actor,target,action,reason,result,created_at', ...all.map((r) => [r.case_id, r.actor_discord_id, r.target_name, r.action, JSON.stringify(r.reason || ''), r.result, r.created_at].join(','))].join('\n');
+      const columns = ['case_id', 'actor_discord_id', 'target_discord_id', 'target_uuid', 'target_name', 'action', 'reason', 'result', 'metadata', 'created_at'];
+      const csv = [
+        columns.map(csvCell).join(','),
+        ...all.map((row) => columns.map((column) => csvCell(row[column])).join(','))
+      ].join('\r\n');
       await interaction.reply({
         ephemeral: true,
         files: [new AttachmentBuilder(Buffer.from(csv), { name: 'logbook.csv' })]

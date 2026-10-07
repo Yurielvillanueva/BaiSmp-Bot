@@ -5,15 +5,23 @@ const { loadCommands } = require('../src/commands');
 async function deploy() {
   const commands = loadCommands().map((c) => c.data.toJSON());
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-  const route = process.env.DISCORD_GUILD_ID
+  const globalRoute = Routes.applicationCommands(process.env.DISCORD_CLIENT_ID);
+  const guildRoute = process.env.DISCORD_GUILD_ID
     ? Routes.applicationGuildCommands(process.env.DISCORD_CLIENT_ID, process.env.DISCORD_GUILD_ID)
-    : Routes.applicationCommands(process.env.DISCORD_CLIENT_ID);
+    : null;
   const scope = process.env.DISCORD_GUILD_ID ? 'guild' : 'global';
 
   console.log(`Deploying ${scope} slash commands`);
   try {
-    await rest.put(route, { body: commands });
-    console.log(`Successfully deployed ${commands.length} ${scope} commands`);
+    if (guildRoute) {
+      await rest.put(guildRoute, { body: commands });
+      console.log(`Successfully deployed ${commands.length} guild commands`);
+      await rest.put(globalRoute, { body: [] });
+      console.log('Removed stale global commands to prevent duplicate entries');
+    } else {
+      await rest.put(globalRoute, { body: commands });
+      console.log(`Successfully deployed ${commands.length} global commands`);
+    }
   } catch (err) {
     console.error(`❌ ${scope} command deployment failed: ${err.message}`);
     console.error('\nTroubleshooting steps:');

@@ -28,6 +28,22 @@ function dashedUuid(uuid) {
 }
 
 function createLinkService(db) {
+  function linkAccount({ discordId, uuid, username }) {
+    const max = cfg(db, 'max_links_per_discord');
+    const existing = db.raw.prepare('SELECT * FROM linked_accounts WHERE minecraft_uuid = ?').get(uuid);
+    if (existing && existing.discord_id !== discordId) {
+      throw new Error('UUID_TAKEN');
+    }
+    const count = db.raw.prepare('SELECT COUNT(*) AS c FROM linked_accounts WHERE discord_id = ?').get(discordId).c;
+    if (!existing && count >= max) {
+      throw new Error('LINK_LIMIT');
+    }
+    db.raw.prepare(`INSERT INTO linked_accounts (discord_id, minecraft_uuid, username)
+      VALUES (?, ?, ?)
+      ON CONFLICT(minecraft_uuid) DO UPDATE SET discord_id = excluded.discord_id, username = excluded.username`)
+      .run(discordId, uuid, username);
+  }
+
   return {
     storeCode(code, uuid, username) {
       const ttl = cfg(db, 'link_code_ttl_minutes') * 60 * 1000;
@@ -44,8 +60,22 @@ function createLinkService(db) {
       const hash = sha256(String(code).trim().toUpperCase());
       const row = db.raw.prepare('SELECT * FROM link_codes WHERE code_hash = ?').get(hash);
       if (!row || row.used || row.expires_at < Date.now()) return null;
-      db.raw.prepare('UPDATE link_codes SET used = 1 WHERE id = ?').run(row.id);
+      const result = db.raw.prepare('UPDATE link_codes SET used = 1 WHERE id = ? AND used = 0 AND expires_at >= ?')
+        .run(row.id, Date.now());
+      if (result.changes !== 1) return null;
       return row;
+    },
+    completeLink(code, discordId) {
+      const hash = sha256(String(code).trim().toUpperCase());
+      return db.raw.transaction(() => {
+        const row = db.raw.prepare('SELECT * FROM link_codes WHERE code_hash = ?').get(hash);
+        if (!row || row.used || row.expires_at < Date.now()) return null;
+        linkAccount({ discordId, uuid: row.minecraft_uuid, username: row.username });
+        const result = db.raw.prepare('UPDATE link_codes SET used = 1 WHERE id = ? AND used = 0 AND expires_at >= ?')
+          .run(row.id, Date.now());
+        if (result.changes !== 1) return null;
+        return row;
+      }).immediate();
     },
     countForDiscord(discordId) {
       return db.raw.prepare('SELECT COUNT(*) AS c FROM linked_accounts WHERE discord_id = ?').get(discordId).c;
@@ -57,22 +87,14 @@ function createLinkService(db) {
       return db.raw.prepare('SELECT * FROM linked_accounts WHERE minecraft_uuid = ?').get(uuid);
     },
     link({ discordId, uuid, username }) {
-      const max = cfg(db, 'max_links_per_discord');
-      if (this.countForDiscord(discordId) >= max) {
-        const err = new Error('LINK_LIMIT');
-        throw err;
-      }
-      const existing = this.getByUuid(uuid);
-      if (existing && existing.discord_id !== discordId) {
-        throw new Error('UUID_TAKEN');
-      }
-      db.raw.prepare(`INSERT INTO linked_accounts (discord_id, minecraft_uuid, username)
-        VALUES (?, ?, ?)
-        ON CONFLICT(minecraft_uuid) DO UPDATE SET discord_id = excluded.discord_id, username = excluded.username, linked_at = datetime('now')`)
-        .run(discordId, uuid, username);
+      linkAccount({ discordId, uuid, username });
     },
     unlink(discordId) {
       db.raw.prepare('DELETE FROM linked_accounts WHERE discord_id = ?').run(discordId);
+    },
+    unlinkMinecraft({ discordId, uuid }) {
+      db.raw.prepare('DELETE FROM linked_accounts WHERE discord_id = ? AND minecraft_uuid = ?')
+        .run(discordId, dashedUuid(uuid) || uuid);
     },
     async refreshUsername(row) {
       const name = await mojangName(row.minecraft_uuid);

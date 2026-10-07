@@ -49,6 +49,10 @@ function attachBot(ctx) {
         }
         const cmd = client.commands.get(interaction.commandName);
         if (!cmd) {
+          logger.error({
+            commandName: interaction.commandName,
+            registeredCommands: [...client.commands.keys()]
+          }, 'received unregistered slash command');
           await interaction.reply({
             content: 'This command is no longer available. Please try again or ask an administrator to redeploy commands.',
             ephemeral: true
@@ -66,7 +70,7 @@ function attachBot(ctx) {
       await handleInteraction(interaction, ctx);
     } catch (err) {
       inc('errors');
-      await replyError(interaction, db, err);
+      await replyError(interaction, ctx, err);
     }
   });
 

@@ -18,7 +18,7 @@ module.exports = [
       const fields = [];
       let total = 0;
       let max = 0;
-      const pings = await Promise.all(servers.map((server) => pingServer(server)));
+      const pings = await Promise.all(servers.map((server) => pingServer(server, ctx)));
       for (const [index, ping] of pings.entries()) {
         const s = servers[index];
         total += ping.players;
@@ -144,13 +144,30 @@ module.exports = [
   },
   {
     data: new SlashCommandBuilder().setName('diagnostics').setDescription('Check Discord, RCON, plugin, database')
+      .addStringOption((o) => o.setName('server').setDescription('Server to check (defaults to the first enabled server)').setMaxLength(100))
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
     staff: 'admin',
     async execute(interaction, ctx) {
       await interaction.deferReply({ ephemeral: true });
-      const checks = await diagnostics(ctx);
+      const requestedName = interaction.options.getString('server');
+      const servers = ctx.db.servers.all();
+      const server = requestedName
+        ? servers.find((item) => item.name.toLowerCase() === requestedName.toLowerCase())
+        : servers[0];
+      if (requestedName && !server) {
+        await interaction.editReply({ content: `No enabled server named "${requestedName}" was found.` });
+        return;
+      }
+      const checks = await diagnostics(ctx, server);
       await interaction.editReply({
-        embeds: [embed(ctx.db, { title: 'Diagnostics', fields: Object.entries(checks).map(([k, v]) => ({ name: k, value: v ? 'ok' : 'fail', inline: true })) })]
+        embeds: [embed(ctx.db, {
+          title: `Diagnostics${server ? ` · ${server.name}` : ''}`,
+          fields: checks.map((check) => ({
+            name: `${check.ok ? '✅' : '❌'} ${check.name}`,
+            value: check.detail.slice(0, 1024),
+            inline: false
+          }))
+        })]
       });
     }
   }
