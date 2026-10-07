@@ -1,8 +1,9 @@
 name: MCBridge
-version: 1.0.0
+version: 1.0.3
 main: com.mcbridge.BridgePlugin
 api-version: "1.21"
+softdepend: [DiscordSRV]
 commands:
-  link:
-    description: Generate a Discord link code
-    usage: /link
+  discordlink:
+    description: Generate a one-time Discord account link code
+    usage: /discordlink

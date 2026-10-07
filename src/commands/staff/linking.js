@@ -18,19 +18,23 @@ module.exports = [
       .addStringOption((o) => o.setName('code').setDescription('6-character code').setRequired(true)),
     async execute(interaction, ctx) {
       const code = interaction.options.getString('code', true);
-      const row = ctx.links.consume(code);
-      if (!row) {
-        await interaction.reply({ content: t(ctx.db, 'link.invalid'), ephemeral: true });
-        return;
-      }
+      let row;
       try {
-        ctx.links.link({ discordId: interaction.user.id, uuid: row.minecraft_uuid, username: row.username });
+        row = ctx.links.completeLink(code, interaction.user.id);
       } catch (err) {
         if (err.message === 'LINK_LIMIT') {
           await interaction.reply({ content: t(ctx.db, 'link.limit'), ephemeral: true });
           return;
         }
+        if (err.message === 'UUID_TAKEN') {
+          await interaction.reply({ content: 'That Minecraft account is already linked to another Discord account.', ephemeral: true });
+          return;
+        }
         throw err;
+      }
+      if (!row) {
+        await interaction.reply({ content: t(ctx.db, 'link.invalid'), ephemeral: true });
+        return;
       }
       await linkedRole(interaction.member, ctx.db, true);
       await interaction.reply({ content: t(ctx.db, 'link.success', { username: row.username, uuid: row.minecraft_uuid }), ephemeral: true });

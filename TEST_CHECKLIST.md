@@ -50,19 +50,21 @@ Use this checklist to verify all features are working correctly after deployment
 ## 3. Account Linking
 
 ### In-Game Link Code
-- [ ] `/link` command in-game generates 6-character code
+- [ ] `/discordlink` command in-game generates 6-character code
 - [ ] Code is uppercase alphanumeric (no ambiguous chars)
 - [ ] Code shown to player with instructions
 - [ ] Code expires after 10 minutes
 - [ ] Code is one-time use (second attempt fails)
 
 ### Discord Link Command
-- [ ] `/link code:XXXXXX` works with valid code
+- [ ] Discord `/link` command accepts a valid code
 - [ ] Invalid/expired code shows error message
 - [ ] Link succeeds and assigns "Linked" role
 - [ ] Discord ID, UUID, username stored in database
 - [ ] Only one Minecraft account per Discord user (configurable)
 - [ ] Attempting to link second account shows limit error
+- [ ] With DiscordSRV enabled, a verified account link is synchronized to MCBridge when the player joins
+- [ ] DiscordSRV link and unlink events update only the matching Minecraft/Discord account pair
 
 ### Whois Command
 - [ ] `/whois user:@user` shows linked account info
@@ -573,7 +575,7 @@ Use this checklist to verify all features are working correctly after deployment
 - [ ] Timestamp validation works (30s window)
 
 ### In-Game Command
-- [ ] `/link` command works
+- [ ] `/discordlink` command works
 - [ ] Generates 6-character code
 - [ ] Sends webhook to bot
 - [ ] Code expires after 10 minutes

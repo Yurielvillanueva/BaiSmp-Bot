@@ -39,19 +39,23 @@ function createDb(databasePath) {
         return db.prepare('SELECT * FROM servers WHERE id = ?').get(id);
       },
       upsert(server) {
-        db.prepare(`INSERT INTO servers (name, host, query_port, rcon_port, rcon_password_enc, plugin_api_url, world_path, log_path, backup_path, status_channel_id, console_channel_id, chat_channel_id, alert_channel_id, enabled)
-          VALUES (@name, @host, @query_port, @rcon_port, @rcon_password_enc, @plugin_api_url, @world_path, @log_path, @backup_path, @status_channel_id, @console_channel_id, @chat_channel_id, @alert_channel_id, @enabled)
+        db.prepare(`INSERT INTO servers (name, host, rcon_host, query_port, rcon_port, rcon_password_enc, plugin_api_url, world_path, log_path, backup_path, status_channel_id, console_channel_id, chat_channel_id, alert_channel_id, enabled)
+          VALUES (@name, @host, @rcon_host, @query_port, @rcon_port, @rcon_password_enc, @plugin_api_url, @world_path, @log_path, @backup_path, @status_channel_id, @console_channel_id, @chat_channel_id, @alert_channel_id, @enabled)
           ON CONFLICT(name) DO UPDATE SET
-            host=excluded.host, query_port=excluded.query_port, rcon_port=excluded.rcon_port,
+            host=excluded.host, rcon_host=excluded.rcon_host, query_port=excluded.query_port, rcon_port=excluded.rcon_port,
             rcon_password_enc=excluded.rcon_password_enc, plugin_api_url=excluded.plugin_api_url,
             world_path=excluded.world_path, log_path=excluded.log_path, backup_path=excluded.backup_path,
-            status_channel_id=excluded.status_channel_id, console_channel_id=excluded.console_channel_id,
+            status_channel_id=COALESCE(excluded.status_channel_id, servers.status_channel_id),
+            console_channel_id=excluded.console_channel_id,
             chat_channel_id=excluded.chat_channel_id, alert_channel_id=excluded.alert_channel_id,
             enabled=excluded.enabled`).run(server);
         return db.prepare('SELECT * FROM servers WHERE name = ?').get(server.name);
       },
       setStatusMessage(id, messageId) {
         db.prepare('UPDATE servers SET status_message_id = ? WHERE id = ?').run(messageId, id);
+      },
+      setStatusChannel(id, channelId) {
+        db.prepare('UPDATE servers SET status_channel_id = ? WHERE id = ?').run(channelId, id);
       },
       setMaintenance(id, on) {
         db.prepare('UPDATE servers SET maintenance = ? WHERE id = ?').run(on ? 1 : 0, id);

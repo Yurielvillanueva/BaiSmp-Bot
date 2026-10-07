@@ -1,19 +1,74 @@
 const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { ticketModal, ticketCategoryMenu, addUserModal } = require('../commands/tickets');
+const { appealDecisionModal } = require('../commands/staff/moderation');
 const { getTicketCategory } = require('../services/ticketCategories');
 const { configModal } = require('../commands/community');
+const { _test: helpPagination } = require('../commands/help');
 const { sendRcon } = require('../services/rcon');
 const { t } = require('../i18n');
 const { isStaff, requireTier } = require('../util/staff');
 const { embed } = require('../util/embeds');
+const { logger } = require('../logger');
 
 async function handleInteraction(interaction, ctx) {
+  if (interaction.isButton() && interaction.customId.startsWith('help:')) {
+    const match = interaction.customId.match(/^help:(all|player|staff|server|tickets|community):(\d+):(\d{17,20})$/);
+    if (!match) {
+      await interaction.reply({ content: 'This help page control is invalid. Run `/help` again.', ephemeral: true });
+      return;
+    }
+    const [, category, rawPage, userId] = match;
+    if (interaction.user.id !== userId) {
+      await interaction.reply({ content: 'Only the person who opened this help menu can change its page.', ephemeral: true });
+      return;
+    }
+    await interaction.update(helpPagination.createHelpPayload(
+      ctx,
+      category,
+      Number(rawPage),
+      userId
+    ));
+    return;
+  }
   if (interaction.isButton() && interaction.customId === 'ticket_open') {
     await interaction.reply({
       content: 'Choose the category that best matches your request.',
       components: [ticketCategoryMenu()],
       ephemeral: true
     });
+    return;
+  }
+  if (interaction.isButton() && interaction.customId.startsWith('ticket_remove_')) {
+    const match = interaction.customId.match(/^ticket_remove_(confirm|cancel):(\d+):(\d{17,20})$/);
+    if (!match) {
+      await interaction.reply({ content: 'This ticket removal request is invalid or expired.', ephemeral: true });
+      return;
+    }
+    const [, action, number, requesterId] = match;
+    if (requesterId !== interaction.user.id || !isStaff(interaction.member, ctx.db)) {
+      await interaction.reply({ content: t(ctx.db, 'generic.no_permission'), ephemeral: true });
+      return;
+    }
+    if (action === 'cancel') {
+      await interaction.update({ content: 'Ticket removal cancelled.', components: [] });
+      return;
+    }
+    const ticket = ctx.tickets.getByNumber(Number(number));
+    if (!ticket || ticket.status === 'deleted') {
+      await interaction.update({ content: `Ticket #${number} is already removed or no longer exists.`, components: [] });
+      return;
+    }
+    await interaction.deferUpdate();
+    const result = await ctx.tickets.remove(ticket, interaction.guild, interaction.user.id);
+    ctx.staffLog.add({
+      actorId: interaction.user.id,
+      action: 'ticket_remove',
+      reason: `#${number}`,
+      result: 'removed from ticket queue',
+      metadata: { category: ticket.category, previousStatus: ticket.status }
+    });
+    await ctx.tickets.logEvent(result, 'removed from queue', interaction.user.id);
+    await interaction.editReply({ content: `Ticket #${number} was removed from the queue.`, components: [] });
     return;
   }
   if (interaction.isStringSelectMenu() && interaction.customId === 'ticket_category') {
@@ -36,13 +91,23 @@ async function handleInteraction(interaction, ctx) {
         .filter((field) => values[field.id])
         .map((field) => `**${field.label}:** ${values[field.id]}`)
         .join('\n');
-      const { channel, number } = await ctx.tickets.open({
+      const { channel, number, duplicate } = await ctx.tickets.open({
         guild: interaction.guild,
         user: interaction.user,
         category: category.label,
         reason: summary,
-        mcName: values.minecraft_name || null
+        mcName: values.minecraft_name || null,
+        submissionId: interaction.id
       });
+      if (duplicate) {
+        await interaction.reply({
+          content: channel
+            ? `You already opened this ticket: ${channel}`
+            : `Ticket #${number} was already created, but its channel is unavailable. Please contact staff.`,
+          ephemeral: true
+        });
+        return;
+      }
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('ticket_claim').setLabel('Claim').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('ticket_close').setLabel('Close').setStyle(ButtonStyle.Danger),
@@ -64,7 +129,7 @@ async function handleInteraction(interaction, ctx) {
         result: channel.id,
         metadata: { category: categoryKey, fields: values }
       });
-      const logged = await ctx.tickets.logEvent(ticket, 'opened', interaction.user.id);
+      const logged = await ctx.tickets.logEvent(ticket, 'opened', interaction.user.id, { detail: summary });
       await interaction.reply({
         content: `Opened ${channel}.${logged ? '' : ' The bot could not post to the ticket log channel; an administrator should check its configuration and permissions.'}`,
         ephemeral: true
@@ -174,15 +239,95 @@ async function handleInteraction(interaction, ctx) {
     await interaction.update({ content: `Ran. \`\`\`\n${result || '(empty)'}\n\`\`\``, components: [] });
     return;
   }
-  if (interaction.isButton() && interaction.customId.startsWith('appeal_')) {
+  if (interaction.isButton() && /^appeal_(accept|deny):\d+$/.test(interaction.customId)) {
     if (!requireTier(interaction.member, ctx.db, 'mod')) {
       await interaction.reply({ content: t(ctx.db, 'generic.no_permission'), ephemeral: true });
       return;
     }
-    const accept = interaction.customId.startsWith('appeal_accept');
+    const [kind, id] = interaction.customId.split(':');
     const appeal = ctx.appeals.getByChannel(interaction.channel.id);
-    const result = await ctx.appeals.vote(appeal.id, interaction.user.id, accept, interaction.guild);
-    await interaction.reply({ content: `Vote recorded. Status: ${result}` });
+    if (!appeal || Number(id) !== appeal.id) {
+      await interaction.reply({ content: 'This appeal action is invalid or belongs to another channel.', ephemeral: true });
+      return;
+    }
+    await interaction.showModal(appealDecisionModal(appeal.id, kind === 'appeal_accept', interaction.message.id));
+    return;
+  }
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('appeal_decision:')) {
+    if (!requireTier(interaction.member, ctx.db, 'mod')) {
+      await interaction.reply({ content: t(ctx.db, 'generic.no_permission'), ephemeral: true });
+      return;
+    }
+    const [, rawId, decision, messageId] = interaction.customId.split(':');
+    const appealId = Number(rawId);
+    const appeal = ctx.appeals.getByChannel(interaction.channel.id);
+    if (!Number.isSafeInteger(appealId) || !appeal || appeal.id !== appealId || !['accept', 'deny'].includes(decision)) {
+      await interaction.reply({ content: 'This appeal decision is invalid or belongs to another channel.', ephemeral: true });
+      return;
+    }
+
+    const reason = interaction.fields.getTextInputValue('decision_reason').trim();
+    await interaction.deferReply({ ephemeral: true });
+    try {
+      const result = await ctx.appeals.vote(
+        appealId,
+        interaction.user.id,
+        decision === 'accept',
+        reason,
+        interaction.guild
+      );
+      const outcome = result.status === 'accepted' ? 'accepted'
+        : result.status === 'denied' ? 'denied' : 'recorded';
+      await interaction.editReply({
+        content: `Your decision was ${outcome}. Votes: ${result.acceptCount} accept, ${result.denyCount} deny; ${result.requiredVotes} matching votes are required.`
+      });
+
+      try {
+        const channel = await interaction.guild.channels.fetch(appeal.channel_id);
+        await channel.send({
+          content: result.status === 'pending'
+            ? `Appeal #${appeal.id}: <@${interaction.user.id}> voted **${decision}** (${result.acceptCount} accept / ${result.denyCount} deny; ${result.requiredVotes} matching votes required). Note: ${reason}`
+            : `Appeal #${appeal.id} **${result.status}**. Decision note: ${reason}`,
+          allowedMentions: { parse: [] }
+        });
+        if (result.status === 'accepted' || result.status === 'denied') {
+          const message = await channel.messages.fetch(messageId);
+          await message.edit({ components: [] });
+          await channel.setTopic(`Appeal #${appeal.id} ${result.status} · Case ${appeal.case_id}`);
+          await channel.permissionOverwrites.edit(appeal.discord_id, { SendMessages: false });
+          let dmDelivered = false;
+          try {
+            const requester = await ctx.client.users.fetch(appeal.discord_id);
+            await requester.send(`Your appeal #${appeal.id} for case ${appeal.case_id} was **${result.status}**. Staff note: ${reason}`);
+            dmDelivered = true;
+          } catch (err) {
+            logger.warn({ err, appealId, status: result.status }, 'could not DM appeal requester about decision');
+          }
+          await interaction.followUp({
+            content: `Appeal #${appeal.id} is ${result.status}.${dmDelivered ? ' The requester was notified by DM.' : ' The requester could not be DMed; notify them in the appeal channel.'}`
+          });
+        }
+      } catch (err) {
+        logger.error({ err, appealId, status: result.status }, 'appeal decision saved but channel update failed');
+        await interaction.followUp({
+          content: `Your decision on appeal #${appeal.id} was recorded as ${result.status}, but the appeal channel could not be updated. Please check bot channel permissions.`
+        });
+      }
+    } catch (err) {
+      if (err.message === 'CLOSED') {
+        await interaction.editReply({ content: 'This appeal has already been decided.' });
+        return;
+      }
+      if (err.message === 'INVALID_DECISION_REASON') {
+        await interaction.editReply({ content: 'Decision notes must be between 10 and 1000 characters.' });
+        return;
+      }
+      if (err.message === 'PUNISHMENT_NOT_REVERSIBLE') {
+        await interaction.editReply({ content: 'This punishment type cannot be automatically lifted. Contact an administrator to review it manually.' });
+        return;
+      }
+      throw err;
+    }
     return;
   }
   if (interaction.isButton() && interaction.customId.startsWith('giveaway_enter')) {

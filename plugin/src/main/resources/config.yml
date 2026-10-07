@@ -1,6 +1,6 @@
 http-port: 8765
 bind: 127.0.0.1
-hmac-secret: 21ad4c5609bb93e86924b3ffa51189787ab5c7b33efc845dcd8284b8fe19bdb8
-bot-webhook: http://127.0.0.1:3000/plugin/event
+hmac-secret: ""
+bot-webhook: http://127.0.0.1:3001/plugin/event
 server-name: survival
 tps-threshold: 16.0

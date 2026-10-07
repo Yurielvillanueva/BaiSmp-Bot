@@ -99,9 +99,9 @@ broadcast-rcon-to-ops=false
 ```
 
 ### Important Security Notes
-- **Never expose RCON (25575) to the internet**
-- Use firewall rules to allow only localhost or private network
-- The bot should run on the same machine or a trusted network
+- Do not publicly expose RCON. Restrict it to localhost, a private network, or the bot's source IP.
+- If BaoHost hosts Minecraft and the bot runs elsewhere, `MC_RCON_HOST` and `MC_RCON_PORT` must be set to the host's allocated external RCON endpoint, not the Minecraft query/game endpoint. Ask BaoHost whether remote RCON is supported and request the RCON hostname, port, and access restrictions. AdvancedBan's `config.yml` does not configure RCON.
+- A refused connection means the TCP endpoint is not accepting connections; changing the AdvancedBan command text cannot fix it. Keep appeal actions that need RCON disabled until the endpoint is reachable.
 
 ### Firewall Rules
 ```bash
@@ -150,6 +150,7 @@ HMAC_SHARED_SECRET=generate-32-byte-random-string-here
 # Minecraft (from Step 3)
 MC_SERVER_NAME=survival
 MC_HOST=127.0.0.1
+MC_RCON_HOST=127.0.0.1
 MC_QUERY_PORT=25565
 MC_RCON_PORT=25575
 MC_RCON_PASSWORD=your_rcon_password_from_server_properties
@@ -200,6 +201,29 @@ STATUS_INTERVAL_MS=30000
 LOG_TAIL_BATCH_MS=2000
 PERF_INTERVAL_MS=60000
 ```
+
+## Render deployment (no website)
+
+Create a **Background Worker**, not a Web Service. The bot does not serve a public website; its local HTTP listeners are bound to loopback for health and plugin integration.
+
+Set the worker's build command to `npm install` and start command to `npm start`. Under **Environment**, add these required variables:
+
+- `DISCORD_TOKEN`: reset token from Discord Developer Portal → Application → Bot.
+- `DISCORD_CLIENT_ID`: Discord application ID.
+- `DISCORD_GUILD_ID`: target server ID.
+- `CREDENTIALS_KEY`: unique random secret, at least 32 characters. Preserve it when reusing a database that contains encrypted server credentials.
+- `BACKUP_ENCRYPTION_KEY`: a different unique random secret, at least 32 characters. Keep the previous key securely if you may need to decrypt older backups.
+- `HMAC_SHARED_SECRET`: unique random secret, at least 32 characters; set the exact same value in Paper's `plugins/MCBridge/config.yml` as `hmac-secret`.
+
+Generate random values locally without posting them in chat:
+
+```powershell
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Run it separately for each key. Never use values from `.env.example`; that file contains placeholders only. If using SQLite, attach a persistent disk and set `DATABASE_PATH` to a file on its mount (for example `/var/data/bridge.sqlite`). Add any Minecraft/RCON variables separately if those features are needed. Save the environment settings and redeploy. If the service still reports missing variables, check their exact spelling and that they were added to the correct Render service's Environment page.
+
+The previous `Invalid environment` startup error means Render did not pass the six required variables to the process; changing bot code cannot supply the Discord token or secrets. If this credential set was ever committed publicly, reset the Discord token and rotate exposed secrets; update the Paper HMAC value to match before restarting the plugin.
 
 ## Step 5: Initialize Database and Deploy Commands
 
@@ -274,15 +298,22 @@ Once the bot is running:
    - Route each to specific channels or use default
 
 3. **Test linking**:
-   - In-game: `/link` → get a 6-character code
-   - In Discord: `/link code:XXXXXX`
-   - Verify "Linked" role is assigned
+   - With DiscordSRV installed, link an account using DiscordSRV's native account-link flow, then join the server; MCBridge should synchronize the verified link automatically.
+   - Without DiscordSRV, use `/discordlink` in-game and submit its code with the bot's `/link` command.
+   - Verify Minecraft stats associate with the correct Discord account.
 
-4. **Test status**:
+4. **Review staff reports** (admin role required):
+   - `/staffreport activity` summarizes logged staff actions by time range and can filter to one staff member.
+   - `/staffreport moderation` counts warn, mute, kick, and ban actions.
+   - `/staffreport audit` filters recent audit entries by time range, staff member, and exact action.
+   - Reports are private to the requesting staff member and use recorded staff-log entries.
+   - Moderators can use `/playeraudit` with a Discord user or Minecraft username to review a player's linked identity and recent/active punishment cases.
+
+5. **Test status**:
    - Check #status channel for live embed
    - Verify bot presence shows player count
 
-5. **Test console**:
+6. **Test console**:
    - Check #console channel for log tail
    - Run `/console run command:list` as staff
 
@@ -299,6 +330,10 @@ Once the bot is running:
 
 3. **Configure appeals** (via `/config`):
    - `appeal_min_votes`: 2 (staff votes needed)
+   - Create an appeals category and configure `appeal_category_id`; configure the Mod role (and higher roles) so staff can view private appeal channels.
+   - Players must use `/appeal submit` with their linked Minecraft username or punishment case ID. Username submissions are not a way to appeal another player's case.
+   - Staff appeal commands are `/appeal list`, `view`, `accept`, `deny`, `reduce`, `note`, `assign`, `close`, and `history`. Accept, deny, and reduce decisions require the configured number of distinct staff votes.
+   - `/appeal reduce` supports active AdvancedBan temporary bans only. It sends AdvancedBan `unban` and `tempban` commands through RCON, requires the new total duration to be shorter than the remaining ban, and attempts to restore the previous remaining duration if replacing the punishment fails. Verify AdvancedBan command responses and ensure the bot can reach the host's actual RCON endpoint before enabling staff to use it.
 
 ## Step 10: Backup and Monitoring
 
@@ -331,8 +366,12 @@ Once the bot is running:
 ### RCON connection failed
 - Verify `server.properties` has `enable-rcon=true`
 - Check RCON password matches
-- Ensure bot can reach server (localhost or VPN)
-- Check firewall isn't blocking 25575
+- Ensure `MC_RCON_HOST` and `MC_RCON_PORT` contain the provider's external RCON hostname/port; do not substitute the game/query endpoint unless the host explicitly confirms it is also the RCON endpoint.
+- Allow RCON only from the bot's source IP or private network. Do not open it to the public internet.
+
+### Rotating the bot/plugin HMAC secret
+- If the `.env` HMAC secret is rotated, set the identical new value in the Paper server's `plugins/MCBridge/config.yml` under `hmac-secret`, then restart/reload MCBridge and restart the bot.
+- Do not paste the secret into Discord, support tickets, or source-controlled YAML files. If BaoHost manages the plugin configuration, update it in their private console/file manager before restarting either service.
 
 ### Plugin webhook failing
 - Verify `hmac-secret` matches between `.env` and `config.yml`

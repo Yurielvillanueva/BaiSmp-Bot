@@ -16,7 +16,6 @@
     "rcon.blocked": "That command is blocked.",
     "ticket.limit": "You already have the maximum number of open tickets.",
     "whitelist.need_link": "Link an account first or provide a valid Java username.",
-    "daily.cooldown": "Daily reward is not ready yet. Try again in {wait}.",
     "appeal.missing": "No active punishment found for that case ID."
   },
   "es": {
@@ -36,7 +35,6 @@
     "rcon.blocked": "Ese comando está bloqueado.",
     "ticket.limit": "Ya tienes el máximo de tickets abiertos.",
     "whitelist.need_link": "Vincula una cuenta o indica un usuario de Java válido.",
-    "daily.cooldown": "La recompensa diaria aún no está lista. Espera {wait}.",
     "appeal.missing": "No hay un castigo activo para ese ID de caso."
   }
 }

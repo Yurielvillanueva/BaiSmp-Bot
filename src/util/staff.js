@@ -25,8 +25,12 @@ function isStaff(member, db) {
 
 function requireTier(member, db, minTier) {
   const tier = memberTier(member, db);
-  if (!tier) return false;
-  return TIER_ORDER.indexOf(tier) >= TIER_ORDER.indexOf(minTier);
+  const minimumRank = TIER_ORDER.indexOf(minTier);
+  if (!tier || minimumRank < 0) return false;
+  const rank = tier === 'head-developer'
+    ? TIER_ORDER.indexOf('owner')
+    : TIER_ORDER.indexOf(tier);
+  return rank >= minimumRank;
 }
 
 function isAdminRoute(member, db) {

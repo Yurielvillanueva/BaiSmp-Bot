@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { cfg } = require('../config/store');
-const { PermissionFlagsBits, ChannelType } = require('discord.js');
+const { PermissionFlagsBits, ChannelType, OverwriteType } = require('discord.js');
 const { embed } = require('../util/embeds');
 const { logger } = require('../logger');
 
@@ -16,21 +16,45 @@ function htmlEscape(s) {
 
 function createTicketService(ctx) {
   const { db, client } = ctx;
+  const opensInProgress = new Map();
 
-  return {
-    async open({ guild, user, category, reason, mcName }) {
+  async function findDuplicate({ guild, user, category, reason, mcName, submissionId }) {
+    const existing = submissionId
+      ? db.raw.prepare('SELECT * FROM tickets WHERE submission_id = ?').get(submissionId)
+      : null;
+    const recent = existing || db.raw.prepare(`SELECT * FROM tickets
+      WHERE discord_id = ? AND category = ? AND status = 'open'
+        AND reason = ? AND COALESCE(mc_name, '') = COALESCE(?, '')
+        AND created_at >= datetime('now', '-45 seconds')
+      ORDER BY id DESC LIMIT 1`).get(user.id, category, reason, mcName || '');
+    if (!recent) return null;
+    const channel = recent.channel_id ? await guild.channels.fetch(recent.channel_id).catch(() => null) : null;
+    return { channel, number: recent.number, duplicate: true };
+  }
+
+  async function createTicket({ guild, user, category, reason, mcName, submissionId }) {
+    const duplicate = await findDuplicate({ guild, user, category, submissionId });
+    if (duplicate) return duplicate;
+
       const open = db.raw.prepare("SELECT COUNT(*) AS c FROM tickets WHERE discord_id = ? AND status = 'open'").get(user.id).c;
       if (open >= cfg(db, 'open_ticket_limit')) throw new Error('TICKET_LIMIT');
       const number = nextTicketNumber(db);
       const parent = cfg(db, 'ticket_category_id');
-      const staffRoles = ['helper_role_id', 'mod_role_id', 'admin_role_id', 'owner_role_id']
+      const staffRoles = [
+        'helper_role_id', 'mod_role_id', 'admin_role_id',
+        'developer_role_id', 'head_developer_role_id', 'owner_role_id'
+      ]
         .map((k) => cfg(db, k)).filter(Boolean);
       const overwrites = [
-        { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-        { id: user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
+        { id: guild.id, type: OverwriteType.Role, deny: [PermissionFlagsBits.ViewChannel] },
+        { id: user.id, type: OverwriteType.Member, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] }
       ];
       for (const roleId of staffRoles) {
-        overwrites.push({ id: roleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] });
+        overwrites.push({
+          id: String(roleId),
+          type: OverwriteType.Role,
+          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory]
+        });
       }
       const channel = await guild.channels.create({
         name: `ticket-${String(number).padStart(4, '0')}`,
@@ -39,18 +63,43 @@ function createTicketService(ctx) {
         permissionOverwrites: overwrites
       });
       try {
-        db.raw.prepare(`INSERT INTO tickets (number, discord_id, channel_id, category, reason, mc_name, status)
-          VALUES (?, ?, ?, ?, ?, ?, 'open')`).run(number, user.id, channel.id, category, reason, mcName);
+        db.raw.prepare(`INSERT INTO tickets (number, discord_id, channel_id, category, reason, mc_name, status, submission_id)
+          VALUES (?, ?, ?, ?, ?, ?, 'open', ?)`).run(number, user.id, channel.id, category, reason, mcName, submissionId || null);
       } catch (err) {
         await channel.delete('Ticket creation failed').catch((deleteErr) => {
           logger.error({ err: deleteErr, channelId: channel.id }, 'failed to remove incomplete ticket channel');
         });
+        if (submissionId) {
+          const duplicate = await findDuplicate({ guild, user, category, submissionId });
+          if (duplicate) return duplicate;
+        }
         throw err;
       }
-      return { channel, number };
+      return { channel, number, duplicate: false };
+  }
+
+  return {
+    async open(input) {
+      const key = `${input.user.id}:${input.category}`;
+      const pending = opensInProgress.get(key);
+      if (pending) {
+        await pending.catch(() => {});
+        const duplicate = await findDuplicate(input);
+        if (duplicate) return duplicate;
+      }
+      const opening = createTicket(input);
+      opensInProgress.set(key, opening);
+      try {
+        return await opening;
+      } finally {
+        if (opensInProgress.get(key) === opening) opensInProgress.delete(key);
+      }
     },
     getByChannel(channelId) {
       return db.raw.prepare('SELECT * FROM tickets WHERE channel_id = ?').get(channelId);
+    },
+    getByNumber(number) {
+      return db.raw.prepare('SELECT * FROM tickets WHERE number = ?').get(number);
     },
     claim(ticketId, staffId) {
       db.raw.prepare("UPDATE tickets SET claimed_by = ?, last_activity_at = datetime('now') WHERE id = ?").run(staffId, ticketId);
@@ -60,7 +109,8 @@ function createTicketService(ctx) {
     },
     async addUser(ticket, guild, userId) {
       const channel = await guild.channels.fetch(ticket.channel_id);
-      await channel.permissionOverwrites.edit(userId, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true });
+      const member = await guild.members.fetch(userId);
+      await channel.permissionOverwrites.edit(member, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true });
     },
     async logEvent(ticket, action, actorId, { detail, file } = {}) {
       const logId = cfg(db, 'ticket_log_channel_id');
@@ -153,6 +203,24 @@ function createTicketService(ctx) {
       }
       return { file, logDelivered, alreadyClosed: false };
     },
+    async remove(ticket, guild, actorId) {
+      if (ticket.status === 'open') {
+        await this.close(ticket, guild, actorId);
+      } else if (ticket.channel_id) {
+        let channel;
+        try {
+          channel = await guild.channels.fetch(ticket.channel_id);
+        } catch (err) {
+          if (err.code !== 10003) throw err;
+        }
+        if (channel) await channel.delete(`Ticket #${ticket.number} removed by staff`);
+      }
+      const result = db.raw.prepare(
+        "UPDATE tickets SET status = 'deleted' WHERE id = ? AND status IN ('open', 'closed')"
+      ).run(ticket.id);
+      if (result.changes !== 1) throw new Error('TICKET_REMOVE_CONFLICT');
+      return { ...ticket, status: 'deleted' };
+    },
     async closeIdle() {
       const hours = cfg(db, 'idle_ticket_hours');
       const rows = db.raw.prepare(`SELECT * FROM tickets WHERE status = 'open' AND datetime(last_activity_at) <= datetime('now', ?)`).all(`-${hours} hours`);
@@ -165,8 +233,12 @@ function createTicketService(ctx) {
         }
       }
     },
-    listOpen() {
-      return db.raw.prepare("SELECT * FROM tickets WHERE status = 'open' ORDER BY number DESC").all();
+    list(status = 'open', category) {
+      if (!['open', 'closed'].includes(status)) throw new Error('TICKET_STATUS_INVALID');
+      if (category) {
+        return db.raw.prepare('SELECT * FROM tickets WHERE status = ? AND category = ? ORDER BY number DESC LIMIT 25').all(status, category);
+      }
+      return db.raw.prepare('SELECT * FROM tickets WHERE status = ? ORDER BY number DESC LIMIT 25').all(status);
     }
   };
 }

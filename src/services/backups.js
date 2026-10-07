@@ -22,16 +22,31 @@ function createBackupService(ctx) {
   async function archiveWorld(worldPath, outTar) {
     await new Promise((resolve, reject) => {
       const tar = spawn('tar', ['-czf', outTar, '-C', path.dirname(worldPath), path.basename(worldPath)], { windowsHide: true });
+      let settled = false;
+      let tarStarted = true;
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+      const succeed = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
       tar.on('error', () => {
+        if (!tarStarted || settled) return;
+        tarStarted = false;
         const zip = spawn(process.platform === 'win32' ? 'powershell' : 'zip', process.platform === 'win32'
           ? ['-NoProfile', '-Command', `Compress-Archive -Path '${worldPath}' -DestinationPath '${outTar}.zip' -Force`]
           : ['-r', `${outTar}.zip`, worldPath], { windowsHide: true });
-        zip.on('exit', (c) => (c === 0 ? resolve() : reject(new Error('archive failed'))));
-        zip.on('error', reject);
+        zip.on('error', fail);
+        zip.on('exit', (code) => (code === 0 ? succeed() : fail(new Error('archive failed'))));
       });
-      tar.on('exit', (c) => {
-        if (c === 0) resolve();
-        else reject(new Error('tar failed'));
+      tar.on('exit', (code) => {
+        if (!tarStarted) return;
+        if (code === 0) succeed();
+        else fail(new Error(`tar failed with exit code ${code}`));
       });
     });
   }
@@ -39,7 +54,25 @@ function createBackupService(ctx) {
   return {
     async run(server, actorId) {
       const world = server.world_path || env.MC_WORLD_PATH;
-      if (!world) throw new Error('NO_WORLD_PATH');
+      if (!world) {
+        const error = new Error('MC_WORLD_PATH is not configured; the bot cannot locate the world directory.');
+        error.code = 'BACKUP_WORLD_PATH_MISSING';
+        throw error;
+      }
+      const worldPath = path.resolve(world);
+      let worldInfo;
+      try {
+        worldInfo = fs.statSync(worldPath);
+      } catch (cause) {
+        const error = new Error(`Configured world directory is inaccessible: ${worldPath}`, { cause });
+        error.code = 'BACKUP_WORLD_PATH_INVALID';
+        throw error;
+      }
+      if (!worldInfo.isDirectory()) {
+        const error = new Error(`Configured world path is not a directory: ${worldPath}`);
+        error.code = 'BACKUP_WORLD_PATH_INVALID';
+        throw error;
+      }
       const dir = path.resolve(server.backup_path || env.MC_BACKUP_PATH);
       fs.mkdirSync(dir, { recursive: true });
       await sendRcon(env, db, server, 'save-off');
@@ -47,7 +80,7 @@ function createBackupService(ctx) {
         await sendRcon(env, db, server, 'save-all');
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
         const tmp = path.join(dir, `world-${stamp}.tgz`);
-        await archiveWorld(world, tmp);
+        await archiveWorld(worldPath, tmp);
         const finalPath = `${tmp}.enc`;
         const src = fs.existsSync(tmp) ? tmp : `${tmp}.zip`;
         encryptFile(src, finalPath, env.BACKUP_ENCRYPTION_KEY);

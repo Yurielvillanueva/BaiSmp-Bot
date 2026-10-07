@@ -21,14 +21,13 @@ const { createAppealsService } = require('./services/appeals');
 const { createEventsService } = require('./services/events');
 const { createStatusService } = require('./services/status');
 const { createLogTail } = require('./services/logTail');
-const { createHttpServer } = require('./http/server');
+const { createHttpServer, createPluginWebhookServer } = require('./http/server');
 const { startScheduler } = require('./jobs/scheduler');
 const { disconnectAll } = require('./services/rcon');
 const { createRedisClient, createCacheService } = require('./services/cache');
 
 async function main() {
   const env = loadEnv();
-  installProcessHandlers(env);
   migrate(env.DATABASE_PATH);
   const db = createDb(env.DATABASE_PATH);
   seedConfigFromEnv(db, env);
@@ -37,6 +36,7 @@ async function main() {
   db.servers.upsert({
     name: env.MC_SERVER_NAME,
     host: env.MC_HOST,
+    rcon_host: env.MC_RCON_HOST || env.MC_HOST,
     query_port: env.MC_QUERY_PORT,
     rcon_port: env.MC_RCON_PORT,
     rcon_password_enc: rconEnc,
@@ -68,12 +68,11 @@ async function main() {
   ctx.events = createEventsService(ctx);
   ctx.tickets = createTicketService(ctx);
   ctx.status = createStatusService(ctx);
+  installProcessHandlers(env, () => ctx);
 
   attachBot(ctx);
   const httpServer = createHttpServer(ctx);
-  if (env.DASHBOARD_ENABLED === 'true') {
-    require('./dashboard/app').startDashboard(ctx);
-  }
+  const pluginWebhookServer = createPluginWebhookServer(ctx);
   const tail = createLogTail(ctx);
   tail.start();
 
@@ -85,7 +84,10 @@ async function main() {
     sched.stop();
     tail.stop();
     disconnectAll();
-    httpServer.close();
+    await Promise.all([
+      new Promise((resolve, reject) => httpServer.close((err) => err ? reject(err) : resolve())),
+      new Promise((resolve, reject) => pluginWebhookServer.close((err) => err ? reject(err) : resolve()))
+    ]);
     await cache.quit();
     await client.destroy();
     closeDb();
