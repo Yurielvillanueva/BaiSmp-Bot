@@ -139,6 +139,78 @@ describe('status command', () => {
   });
 });
 
+describe('player commands', () => {
+  test('lists configured server counts and visible online player names publicly', async () => {
+    minecraftServerUtil.status.mockResolvedValueOnce({
+      players: { online: 2, max: 30, sample: [{ name: 'Alex' }, { name: 'Steve' }] },
+      version: { name: 'Paper 1.21.1' },
+      motd: { clean: 'Welcome' },
+      roundTripLatency: 24
+    });
+    const command = loadCommands().find((item) => item.data.name === 'online');
+    const server = { id: 1, name: 'Survival', host: 'play.example.net', query_port: 25565 };
+    const interaction = {
+      options: { getString: () => null },
+      deferReply: jest.fn().mockResolvedValue(undefined),
+      editReply: jest.fn().mockResolvedValue(undefined)
+    };
+
+    await command.execute(interaction, {
+      db: {
+        servers: { all: () => [server] },
+        config: { get: () => undefined }
+      }
+    });
+
+    expect(interaction.deferReply).toHaveBeenCalledWith();
+    const result = interaction.editReply.mock.calls[0][0].embeds[0].toJSON();
+    expect(result.title).toBe('Players online');
+    expect(result.fields[0].value).toContain('2/30');
+    expect(result.fields[0].value).toContain('Alex, Steve');
+  });
+
+  test('checks playtime for the invoking user linked to Minecraft', async () => {
+    const command = loadCommands().find((item) => item.data.name === 'playtime');
+    const forPlayer = jest.fn().mockResolvedValue({
+      playtimeMin: 3210,
+      head: 'https://mc-heads.net/avatar/example/64'
+    });
+    const interaction = {
+      user: { id: 'discord-player' },
+      deferReply: jest.fn().mockResolvedValue(undefined),
+      editReply: jest.fn().mockResolvedValue(undefined)
+    };
+
+    await command.execute(interaction, {
+      db: { config: { get: () => undefined } },
+      links: { getByDiscord: () => [{ username: 'Alex', minecraft_uuid: 'uuid-1' }] },
+      stats: { forPlayer }
+    });
+
+    expect(forPlayer).toHaveBeenCalledWith('Alex', 'uuid-1');
+    expect(interaction.deferReply).toHaveBeenCalledWith({ ephemeral: true });
+    expect(interaction.editReply.mock.calls[0][0].embeds[0].toJSON().description).toBe('**2d 5h 30m**');
+  });
+
+  test('asks players to link their account before showing playtime', async () => {
+    const command = loadCommands().find((item) => item.data.name === 'playtime');
+    const interaction = {
+      user: { id: 'discord-player' },
+      reply: jest.fn().mockResolvedValue(undefined)
+    };
+
+    await command.execute(interaction, {
+      links: { getByDiscord: () => [] },
+      stats: { forPlayer: jest.fn() }
+    });
+
+    expect(interaction.reply).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining('Link your Minecraft account'),
+      ephemeral: true
+    }));
+  });
+});
+
 describe('Discord Minecraft account linking command', () => {
   const command = loadCommands().find((item) => item.data.name === 'link');
 
@@ -394,11 +466,20 @@ describe('whitelist command permissions', () => {
       const pages = replies.flatMap((reply) => reply.embeds.map((item) => item.toJSON()));
       const pageCount = Number(pages[0].title.match(/· 1\/(\d+)$/)?.[1] || 1);
       const allPages = Array.from({ length: pageCount }, (_, pageIndex) =>
-        help._test.createHelpPayload(ctx, 'all', pageIndex, '123456789012345678')
+        help._test.createHelpPayload(ctx, 'all', pageIndex)
       )
         .flatMap((payload) => payload.embeds.map((item) => item.toJSON()));
       const fields = allPages.flatMap((page) => page.fields);
       const content = fields.map((field) => field.value).join('\n');
+      const playerContent = fields
+        .filter((field) => field.name.includes('Player tools'))
+        .map((field) => field.value)
+        .join('\n');
+      const firstStaffPage = help._test.createHelpPayload(ctx, 'staff', 0).embeds[0].toJSON();
+      const staffPageCount = Number(firstStaffPage.title.match(/· 1\/(\d+)$/)?.[1] || 1);
+      const staffContent = Array.from({ length: staffPageCount }, (_, pageIndex) =>
+        help._test.createHelpPayload(ctx, 'staff', pageIndex).embeds[0].toJSON()
+      ).flatMap((page) => page.fields.map((field) => field.value)).join('\n');
       expect(pages[0].title).toContain('Bai SMP Commands');
       expect(pages[0].title).toMatch(/· 1\/\d+$/);
       expect(pages[0].fields.length).toBeLessThanOrEqual(2);
@@ -406,21 +487,32 @@ describe('whitelist command permissions', () => {
       expect(replies[0].components[0].components[1].data.disabled).toBe(false);
       expect(fields.map((field) => field.name)).toEqual(expect.arrayContaining([
         expect.stringContaining('Player tools'),
-        expect.stringContaining('Staff tools'),
         expect.stringContaining('Server tools'),
-        expect.stringContaining('Tickets'),
         expect.stringContaining('Community')
       ]));
+      expect(fields.some((field) => field.name.includes('Staff tools'))).toBe(false);
       expect(content).toContain('`/appeal submit <reason> [ign] [case_id]` — Appeal an active ban or mute');
       expect(content).toContain('`/status [address] [port]` — Show the Minecraft server status');
-      expect(content).toContain('`/ticketqueue [action] [status] [category] [number]` — List, filter, or remove support and recruitment tickets');
       expect(content).toContain('`/help [category]` — List bot commands and what they do');
+      expect(fields.some((field) => field.name.includes('Staff tools'))).toBe(false);
+      expect(playerContent).not.toContain('/appeal list');
+      expect(playerContent).not.toContain('/whois');
+      expect(staffContent).toContain('/appeal list');
+      expect(staffContent).toContain('/whois');
+      expect(staffContent).toContain('/backup now');
+      expect(staffContent).toContain('`/ticketqueue [action] [status] [category] [number]` — List, filter, or remove support and recruitment tickets');
+      expect(staffContent).toContain('/ticketpanel');
+      expect(staffContent).not.toContain('Staff:');
+      const publicServerHelp = help._test.createHelpPayload(ctx, 'server', 0).embeds[0].toJSON();
+      const publicTicketHelp = help._test.createHelpPayload(ctx, 'tickets', 0).embeds[0].toJSON();
+      expect(publicServerHelp.fields.map((field) => field.value).join('\n')).not.toContain('/backup');
+      expect((publicTicketHelp.fields || []).map((field) => field.value).join('\n')).not.toContain('/ticketqueue');
       expect(replies).toHaveLength(1);
-      expect(replies.every((reply) => reply.ephemeral && reply.embeds.length === 1)).toBe(true);
+      expect(replies.every((reply) => !reply.ephemeral && reply.embeds.length === 1)).toBe(true);
       expect(allPages.every((page) => page.fields.every((field) => field.value.length <= 1024))).toBe(true);
     });
 
-    test('help page buttons are private to the user who opened the menu', async () => {
+    test('help page buttons can be used by anyone, but staff category buttons are gated', async () => {
       const { handleInteraction } = require('../src/events/interactions');
       const commands = loadCommands();
       const ctx = {
@@ -429,7 +521,7 @@ describe('whitelist command permissions', () => {
       };
       const interaction = {
         user: { id: '123456789012345678' },
-        customId: 'help:all:1:123456789012345678',
+        customId: 'help:all:1',
         isButton: () => true,
         update: jest.fn().mockResolvedValue(undefined),
         reply: jest.fn().mockResolvedValue(undefined)
@@ -447,14 +539,62 @@ describe('whitelist command permissions', () => {
       const otherUser = {
         ...interaction,
         user: { id: '223456789012345678' },
-        update: jest.fn(),
+        update: jest.fn().mockResolvedValue(undefined),
         reply: jest.fn().mockResolvedValue(undefined)
       };
       await handleInteraction(otherUser, ctx);
-      expect(otherUser.reply).toHaveBeenCalledWith(expect.objectContaining({
-        content: expect.stringContaining('Only the person')
+      expect(otherUser.update).toHaveBeenCalled();
+      expect(otherUser.reply).not.toHaveBeenCalled();
+
+      const nonStaff = {
+        ...interaction,
+        customId: 'help:staff:0',
+        member: { roles: { cache: { has: () => false } } },
+        update: jest.fn(),
+        reply: jest.fn().mockResolvedValue(undefined)
+      };
+      await handleInteraction(nonStaff, ctx);
+      expect(nonStaff.reply).toHaveBeenCalledWith(expect.objectContaining({
+        content: expect.stringContaining('configured staff role'),
+        ephemeral: true
       }));
-      expect(otherUser.update).not.toHaveBeenCalled();
+      expect(nonStaff.update).not.toHaveBeenCalled();
+    });
+
+    test('only configured staff can request the private staff help category', async () => {
+      const commands = loadCommands();
+      const help = commands.find((command) => command.data.name === 'help');
+      const makeInteraction = (member) => ({
+        member,
+        options: { getString: () => 'staff' },
+        reply: jest.fn().mockResolvedValue(undefined)
+      });
+      const ctx = {
+        client: { commands: new Map(commands.map((command) => [command.data.name, command])) },
+        db: { config: { get: (key) => (key === 'helper_role_id' ? 'helper-role' : undefined) } }
+      };
+
+      const verifiedMember = {
+        roles: { cache: { has: () => true } }
+      };
+      const unauthorized = makeInteraction({
+        roles: { cache: { has: (id) => id === 'verified-role' } }
+      });
+      await help.execute(unauthorized, {
+        ...ctx,
+        db: { config: { get: (key) => (key === 'verified_role_id' ? 'verified-role' : undefined) } }
+      });
+      expect(unauthorized.reply).toHaveBeenCalledWith(expect.objectContaining({
+        content: expect.stringContaining('configured staff role'),
+        ephemeral: true
+      }));
+
+      const staff = makeInteraction(verifiedMember);
+      await help.execute(staff, ctx);
+      expect(staff.reply).toHaveBeenCalledWith(expect.objectContaining({
+        ephemeral: true,
+        embeds: [expect.anything()]
+      }));
     });
 
     test('replies when a command is no longer registered', async () => {

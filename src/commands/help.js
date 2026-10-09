@@ -2,8 +2,9 @@ const {
   SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle
 } = require('discord.js');
 const { embed, theme } = require('../util/embeds');
+const { isStaff } = require('../util/staff');
 
-const PLAYER_COMMANDS = new Set(['appeal', 'link', 'stats', 'status', 'top', 'unlink', 'whois']);
+const PLAYER_COMMANDS = new Set(['appeal', 'link', 'online', 'playtime', 'stats', 'status', 'top', 'unlink', 'whois']);
 const SERVER_COMMANDS = new Set([
   'backup', 'console', 'diagnostics', 'killswitch', 'maintenance', 'perf', 'restart', 'server'
 ]);
@@ -23,10 +24,11 @@ const FIELDS_PER_PAGE = 2;
 
 function commandCategory(command) {
   const name = command.data.name;
+  if (command.staff) return 'staff';
   if (PLAYER_COMMANDS.has(name)) return 'player';
   if (TICKET_COMMANDS.has(name)) return 'tickets';
   if (SERVER_COMMANDS.has(name)) return 'server';
-  if (command.staff || ['ban', 'kick', 'mute', 'tempban', 'warn', 'whitelist'].includes(name)) return 'staff';
+  if (['ban', 'kick', 'mute', 'tempban', 'warn', 'whitelist'].includes(name)) return 'staff';
   return 'community';
 }
 
@@ -63,6 +65,34 @@ function describeCommand(command) {
   });
 }
 
+function categorizeCommandActions(command) {
+  const json = command.data.toJSON();
+  const options = json.options || [];
+  const actions = options.filter((option) => option.type === 1 || option.type === 2);
+  const entries = !actions.length
+    ? [{ description: json.description, text: formatAction(`/${json.name}`, json.description, options) }]
+    : actions.flatMap((action) => {
+      if (action.type !== 2) {
+        return [{
+          description: action.description,
+          text: formatAction(`/${json.name} ${action.name}`, action.description, action.options || [])
+        }];
+      }
+      return (action.options || []).map((nested) => ({
+        description: nested.description,
+        text: formatAction(`/${json.name} ${action.name} ${nested.name}`, nested.description, nested.options || [])
+      }));
+    });
+
+  return entries.map(({ description, text }) => {
+    const isStaffAction = /^staff:\s*/i.test(description || '');
+    return {
+      category: isStaffAction ? 'staff' : commandCategory(command),
+      text: isStaffAction ? text.replace(/ — Staff:\s*/i, ' — ') : text
+    };
+  });
+}
+
 function splitCategory(category, entries, maxLength = FIELD_LIMIT) {
   const chunks = [];
   let chunk = '';
@@ -84,11 +114,14 @@ function splitCategory(category, entries, maxLength = FIELD_LIMIT) {
 }
 
 function buildFields(commands, selected) {
-  const categories = selected === 'all' ? CATEGORY_ORDER : [selected];
+  const categories = selected === 'all'
+    ? CATEGORY_ORDER.filter((category) => category !== 'staff')
+    : [selected];
   return categories.flatMap((category) => {
     const entries = commands
-      .filter((command) => commandCategory(command) === category)
-      .flatMap(describeCommand);
+      .flatMap(categorizeCommandActions)
+      .filter((entry) => entry.category === category)
+      .map((entry) => entry.text);
     return entries.length ? splitCategory(category, entries) : [];
   });
 }
@@ -126,24 +159,28 @@ function helpEmbed(db, { selected, page, pageIndex, pageCount, actionCount }) {
     });
 }
 
-function createHelpPayload(ctx, selected, pageIndex, userId) {
+function createHelpPayload(ctx, selected, pageIndex) {
     const commands = [...ctx.client.commands.values()]
-      .filter((command) => selected === 'all' || commandCategory(command) === selected)
       .sort((a, b) => a.data.name.localeCompare(b.data.name));
     const fields = buildFields(commands, selected);
-    const actionCount = commands.reduce((total, command) => total + describeCommand(command).length, 0);
+    const actionCount = commands
+      .flatMap(categorizeCommandActions)
+      .filter((entry) => selected === 'all'
+        ? entry.category !== 'staff'
+        : entry.category === selected)
+      .length;
     const pages = splitFields(fields);
     const currentIndex = Math.max(0, Math.min(pageIndex, pages.length - 1));
     const components = pages.length > 1
       ? [new ActionRowBuilder().addComponents(
         new ButtonBuilder()
-          .setCustomId(`help:${selected}:${Math.max(0, currentIndex - 1)}:${userId}`)
+          .setCustomId(`help:${selected}:${Math.max(0, currentIndex - 1)}`)
           .setLabel('Previous')
           .setStyle(ButtonStyle.Secondary)
           .setEmoji('◀️')
           .setDisabled(currentIndex === 0),
         new ButtonBuilder()
-          .setCustomId(`help:${selected}:${Math.min(pages.length - 1, currentIndex + 1)}:${userId}`)
+          .setCustomId(`help:${selected}:${Math.min(pages.length - 1, currentIndex + 1)}`)
           .setLabel('Next')
           .setStyle(ButtonStyle.Primary)
           .setEmoji('▶️')
@@ -160,7 +197,6 @@ function createHelpPayload(ctx, selected, pageIndex, userId) {
         actionCount
       })],
       components,
-      ephemeral: true
     };
 }
 
@@ -181,8 +217,14 @@ module.exports = {
       )),
   async execute(interaction, ctx) {
     const selected = interaction.options.getString('category') || 'all';
+    if (selected === 'staff' && !isStaff(interaction.member, ctx.db)) {
+      await interaction.reply({
+        content: 'Staff tools are only available to members with a configured staff role.',
+        ephemeral: true
+      });
+      return;
+    }
     const commands = [...ctx.client.commands.values()]
-      .filter((command) => selected === 'all' || commandCategory(command) === selected)
       .sort((a, b) => a.data.name.localeCompare(b.data.name));
     const fields = buildFields(commands, selected);
     if (!fields.length) {
@@ -190,10 +232,14 @@ module.exports = {
       return;
     }
 
-    await interaction.reply(createHelpPayload(ctx, selected, 0, interaction.user.id));
+    await interaction.reply({
+      ...createHelpPayload(ctx, selected, 0),
+      ...(selected === 'staff' ? { ephemeral: true } : {})
+    });
   }
 };
 
 module.exports._test = {
-  commandCategory, describeCommand, splitCategory, splitFields, helpEmbed, createHelpPayload, CATEGORY_INFO
+  commandCategory, describeCommand, categorizeCommandActions, splitCategory, splitFields, helpEmbed,
+  createHelpPayload, CATEGORY_INFO
 };

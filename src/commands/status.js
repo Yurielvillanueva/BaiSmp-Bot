@@ -68,7 +68,7 @@ module.exports = {
     }
 
     const visibleServers = selectedServers.slice(0, 10);
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply();
     const pings = await Promise.all(visibleServers.map((server) => pingServer(server, ctx)));
     for (const [index, server] of visibleServers.entries()) {
       await ctx.status.publish(server, pings[index], interaction.channel);

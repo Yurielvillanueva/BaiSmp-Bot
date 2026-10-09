@@ -90,6 +90,8 @@ Staff can use `/ticketqueue` to list active (`status:Active`) or closed tickets,
 
 Use `/status` to publish or refresh a live status panel for each configured Minecraft server in the current channel. The bot edits these saved panels automatically at the interval configured by `STATUS_INTERVAL_MS` (30 seconds by default); if a panel is deleted, it is recreated on the next automatic refresh. To check a server directly without creating a live panel, enter its IP/hostname in `address` and its query port in `port` (defaults to `25565`); do not include the port in the address field. The embed includes online state, player counts and listed names, MOTD, server address, detected version, and supported versions (1.21–1.21.11). No website link is included.
 
+Player commands include `/online [server]` to show counts and available player names for configured servers, and `/playtime` to privately check the playtime of your linked Minecraft account. `/playtime` needs readable Minecraft statistics through the plugin API or configured world stats path.
+
 `/maintenance state:on|off` changes the Minecraft whitelist and updates the server's maintenance status only after the RCON command succeeds. If multiple servers are configured, specify the server name with the command's `server` option. `/backup now` needs `MC_WORLD_PATH` to point to a readable Minecraft world directory on the bot machine, plus a working RCON connection. A bot on a different host cannot directly archive the Paper server's world files; configure backups in the hosting panel or run the bot/backup job on the Minecraft host. Redeploy slash commands with `npm run deploy` after updating the bot.
 
 ## server.properties

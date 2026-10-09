@@ -12,21 +12,23 @@ const { logger } = require('../logger');
 
 async function handleInteraction(interaction, ctx) {
   if (interaction.isButton() && interaction.customId.startsWith('help:')) {
-    const match = interaction.customId.match(/^help:(all|player|staff|server|tickets|community):(\d+):(\d{17,20})$/);
+    const match = interaction.customId.match(/^help:(all|player|staff|server|tickets|community):(\d+)$/);
     if (!match) {
       await interaction.reply({ content: 'This help page control is invalid. Run `/help` again.', ephemeral: true });
       return;
     }
-    const [, category, rawPage, userId] = match;
-    if (interaction.user.id !== userId) {
-      await interaction.reply({ content: 'Only the person who opened this help menu can change its page.', ephemeral: true });
+    const [, category, rawPage] = match;
+    if (category === 'staff' && !isStaff(interaction.member, ctx.db)) {
+      await interaction.reply({
+        content: 'Staff tools are only available to members with a configured staff role.',
+        ephemeral: true
+      });
       return;
     }
     await interaction.update(helpPagination.createHelpPayload(
       ctx,
       category,
-      Number(rawPage),
-      userId
+      Number(rawPage)
     ));
     return;
   }
