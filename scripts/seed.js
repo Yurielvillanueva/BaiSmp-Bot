@@ -12,6 +12,7 @@ seedConfigFromEnv(db, env);
 db.servers.upsert({
   name: env.MC_SERVER_NAME,
   host: env.MC_HOST,
+  rcon_host: env.MC_RCON_HOST || env.MC_HOST,
   query_port: env.MC_QUERY_PORT,
   rcon_port: env.MC_RCON_PORT,
   rcon_password_enc: env.MC_RCON_PASSWORD ? encrypt(env.MC_RCON_PASSWORD, env.CREDENTIALS_KEY) : null,
